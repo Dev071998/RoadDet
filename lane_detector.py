@@ -1,11 +1,47 @@
-#working in local machine 
-
 import cv2
 import numpy as np
 import os
 from datetime import datetime
+from collections import deque
+
+# Configuration parameters
+HISTORY_LENGTH = 5  # Number of frames to average over
+MIN_SLOPE = 0.5     # Minimum slope to consider as lane
+MAX_DIFF = 0.2      # Maximum allowed difference from average
+
+# Lane tracking buffers
+left_lane_buffer = deque(maxlen=HISTORY_LENGTH)
+right_lane_buffer = deque(maxlen=HISTORY_LENGTH)
+
+def calculate_line_parameters(line):
+    """Convert line endpoints to slope-intercept form"""
+    x1, y1, x2, y2 = line
+    if x2 - x1 == 0:
+        return None, None  # Avoid division by zero
+    slope = (y2 - y1) / (x2 - x1)
+    intercept = y1 - slope * x1
+    return slope, intercept
+
+def average_lines(buffer):
+    """Calculate average line from buffer using slope-intercept form"""
+    if not buffer:
+        return None
+    
+    # Average slopes and intercepts separately
+    avg_slope = np.mean([s for s, i in buffer])
+    avg_intercept = np.mean([i for s, i in buffer])
+    
+    # Create line endpoints based on average parameters
+    y1 = 480  # Bottom of the image
+    y2 = int(480 * 0.6)  # Top of ROI
+    x1 = int((y1 - avg_intercept) / avg_slope)
+    x2 = int((y2 - avg_intercept) / avg_slope)
+    
+    return (x1, y1, x2, y2)
 
 def detect_lanes(frame):
+    global left_lane_buffer, right_lane_buffer
+    
     # Convert to grayscale
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     
@@ -40,20 +76,73 @@ def detect_lanes(frame):
     # Create blank image to draw lines
     line_image = np.zeros_like(frame)
     
-    # Draw filtered lines
+    current_left = []
+    current_right = []
+
     if lines is not None:
         for line in lines:
             x1, y1, x2, y2 = line[0]
-            if x2 - x1 == 0:
-                continue  # Avoid division by zero
-            slope = (y2 - y1) / (x2 - x1)
-            if abs(slope) > 0.5:
-                cv2.line(line_image, (x1, y1), (x2, y2), (0, 255, 0), 3)
+            slope, intercept = calculate_line_parameters(line[0])
+            
+            if slope is None:
+                continue
+                
+            # Filter by slope and direction
+            if slope < -MIN_SLOPE:  # Left lane
+                current_left.append((slope, intercept))
+            elif slope > MIN_SLOPE:  # Right lane
+                current_right.append((slope, intercept))
+
+    # Process left lane with moving average
+    if current_left:
+        # Calculate current average
+        avg_slope = np.mean([s for s, i in current_left])
+        avg_intercept = np.mean([i for s, i in current_left])
+        
+        # Check against previous average if buffer isn't empty
+        if left_lane_buffer:
+            prev_avg_s = np.mean([s for s, i in left_lane_buffer])
+            prev_avg_i = np.mean([i for s, i in left_lane_buffer])
+            if abs(avg_slope - prev_avg_s) > MAX_DIFF:
+                # Use previous values if difference too big
+                avg_slope = prev_avg_s
+                avg_intercept = prev_avg_i
+        
+        left_lane_buffer.append((avg_slope, avg_intercept))
     
+    # Process right lane with moving average
+    if current_right:
+        avg_slope = np.mean([s for s, i in current_right])
+        avg_intercept = np.mean([i for s, i in current_right])
+        
+        if right_lane_buffer:
+            prev_avg_s = np.mean([s for s, i in right_lane_buffer])
+            prev_avg_i = np.mean([i for s, i in right_lane_buffer])
+            if abs(avg_slope - prev_avg_s) > MAX_DIFF:
+                avg_slope = prev_avg_s
+                avg_intercept = prev_avg_i
+        
+        right_lane_buffer.append((avg_slope, avg_intercept))
+    
+    # Get averaged lines
+    left_line = average_lines(left_lane_buffer)
+    right_line = average_lines(right_lane_buffer)
+    
+    # Draw lines if available
+    if left_line:
+        x1, y1, x2, y2 = left_line
+        cv2.line(line_image, (x1, y1), (x2, y2), (0, 255, 0), 3)
+        
+    if right_line:
+        x1, y1, x2, y2 = right_line
+        cv2.line(line_image, (x1, y1), (x2, y2), (0, 255, 0), 3)
+
     # Combine with original image
     return cv2.addWeighted(frame, 0.8, line_image, 1, 0)
 
 def create_lane_video(input_dir, output_dir, fps=20):
+    global left_lane_buffer, right_lane_buffer
+    
     # Get all image files
     image_files = sorted([f for f in os.listdir(input_dir) 
                         if f.lower().endswith(('.png', '.jpg', '.jpeg'))],
@@ -75,6 +164,10 @@ def create_lane_video(input_dir, output_dir, fps=20):
 
     # Process all images
     for idx, img_file in enumerate(image_files):
+        # Reset buffers for new video
+        left_lane_buffer.clear()
+        right_lane_buffer.clear()
+        
         img_path = os.path.join(input_dir, img_file)
         frame = cv2.imread(img_path)
         
