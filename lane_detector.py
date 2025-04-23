@@ -94,7 +94,7 @@ def detect_lanes(frame):
     cv2.fillPoly(mask, [vertices], 255)
     masked_edges = cv2.bitwise_and(edges, mask)
     
-    # 6. Improved Hough Line Transform
+    # 6. Hough Line Transform
     lines = cv2.HoughLinesP(
         masked_edges,
         rho=1,
@@ -126,7 +126,7 @@ def detect_lanes(frame):
 
     # Process left lane with moving average and stability checks
     if current_left:
-        avg_slope = np.median([s for s, i in current_left])  # Using median for robustness
+        avg_slope = np.median([s for s, i in current_left])  # for robustness
         avg_intercept = np.median([i for s, i in current_left])
         
         if left_lane_buffer:
